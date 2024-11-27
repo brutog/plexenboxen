@@ -1,0 +1,384 @@
+x-logging:
+  &default-logging
+  driver: "journald"
+  options:
+    tag: "{{.Name}}"
+
+services:
+  traefik:
+    container_name: "traefik"
+    logging: *default-logging
+    image: traefik:v3.2
+    ports:
+      - 80:80
+      - 443:443
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${DOCKER_ROOT}/letsencrypt:/letsencrypt
+      #- /docker/traefik/logs:/var/log
+    environment:
+      - PUID=${USER_ID}
+      - PGID=${GROUP_ID}
+      - TZ=${TIMEZONE}
+      - DUCKDNS_TOKEN=${DUCKDNS_TOKEN}
+    command:
+      - --api.dashboard=true
+      - --log.level=INFO
+        #- --log.filepath=/var/log/traefik.log
+      - --accesslog=true
+        #- --accesslog.filepath=/var/log/traefik-access.log
+        #- --providers.docker.network=proxy
+      - --providers.docker.exposedByDefault=false
+      - --entrypoints.web.address=:80
+      - --entrypoints.web.http.redirections.entrypoint.to=websecure
+      - --entrypoints.web.http.redirections.entrypoint.scheme=https
+      - --entrypoints.websecure.address=:443
+      - --entrypoints.websecure.asDefault=true 
+      - --entrypoints.websecure.http.tls.certResolver=myresolver
+      - --entrypoints.websecure.http.tls.domains[0].main=${DOMAIN}
+      - --entrypoints.websecure.http.tls.domains[0].sans=*.${DOMAIN}
+      - --certificatesresolvers.myresolver.acme.dnschallenge.provider=${DNS_PROVIDER}
+      - --certificatesresolvers.myresolver.acme.email=${ACME_EMAIL}
+      - --certificatesresolvers.myresolver.acme.storage=/letsencrypt/acme.json
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.mydashboard.rule=Host(`traefik.${DOMAIN}`)
+      - traefik.http.routers.mydashboard.service=api@internal
+      - traefik.http.routers.mydashboard.middlewares=myauth
+      - traefik.http.middlewares.myauth.basicauth.users=${BASIC_AUTH}
+  
+  homepage:
+    image: ghcr.io/gethomepage/homepage:latest
+    container_name: homepage
+    logging: *default-logging
+    environment:
+      - TZ=${TIMEZONE}
+      - HOMEPAGE_VAR_TITLE=${HOMEPAGE_VAR_TITLE}
+      - HOMEPAGE_VAR_SEARCH_PROVIDER=${HOMEPAGE_VAR_SEARCH_PROVIDER}
+      - HOMEPAGE_VAR_HEADER_STYLE=${HOMEPAGE_VAR_HEADER_STYLE}
+      - HOMEPAGE_VAR_WEATHER_CITY=${HOMEPAGE_VAR_WEATHER_CITY}
+      - HOMEPAGE_VAR_WEATHER_TIME=${TIMEZONE}
+      - HOMEPAGE_VAR_WEATHER_UNIT=${HOMEPAGE_VAR_WEATHER_UNIT}
+    volumes:
+      - ./homepage:/app/config
+      - /var/run/docker.sock:/var/run/docker.sock:so
+      - ${DATA_ROOT}:/data
+    restart: always
+    command: [sh, -c, "cp -n /app/config/tpl/*.yaml /app/config && node server.js"]
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.homepage.rule=Host(`${DOMAIN}`)
+      - traefik.http.services.homepage.loadbalancer.server.port=3000
+      - traefik.http.routers.homepage.middlewares=myauth
+      - traefik.http.middlewares.myauth.basicauth.users=${BASIC_AUTH}
+
+  sabnzbd:
+    image: lscr.io/linuxserver/sabnzbd:latest
+    container_name: sabnzbd
+    logging: *default-logging
+    environment:
+      - PUID=${USER_ID}
+      - PGID=${GROUP_ID}
+      - TZ=${TIMEZONE}
+    volumes:
+      - ${DOCKER_ROOT}/sabnzbd:/config
+      - ${DATA_ROOT}:/data
+    restart: always
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.sabnzbd.rule=Host(`sabnzbd.${DOMAIN}`)
+      - traefik.http.services.sabnzbd.loadbalancer.server.port=8080
+      - homepage.group=Download
+      - homepage.name=Sabnzbd
+      - homepage.icon=sabnzbd.png
+      - homepage.href=https://sabnzbd.${DOMAIN}${OPT_EXT_PORT}
+      - homepage.description=Usenet
+      - homepage.weight=3
+      - homepage.widget.type=sabnzbd
+      - homepage.widget.url=https://sabnzbd.${DOMAIN}${OPT_EXT_PORT}
+      - homepage.widget.key=${ARR_API_KEY}
+
+  sonarr:
+    image: lscr.io/linuxserver/sonarr
+    container_name: sonarr
+    logging: *default-logging
+    environment:
+      - PUID=${USER_ID}
+      - PGID=${GROUP_ID}
+      - TZ=${TIMEZONE}
+      - SONARR__AUTH__APIKEY=${ARR_API_KEY}
+    volumes:
+      - ${DOCKER_ROOT}/sonarr:/config
+      - ${DATA_ROOT}:/data
+    restart: always
+    healthcheck:
+      test: [ "CMD", "curl", "--fail", "http://127.0.0.1:8989/sonarr/ping" ]
+      interval: 10s
+      retries: 10
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.sonarr.rule=Host(`sonarr.${DOMAIN}`)
+      - traefik.http.services.sonarr.loadbalancer.server.port=8989
+      - homepage.group=Media
+      - homepage.name=Sonarr
+      - homepage.icon=sonarr.png
+      - homepage.href=https://sonarr.${DOMAIN}${OPT_EXT_PORT}
+      - homepage.description=Series management
+      - homepage.weight=0
+      - homepage.widget.type=sonarr
+      - homepage.widget.url=https://sonarr.${DOMAIN}${OPT_EXT_PORT}
+      - homepage.widget.key=${ARR_API_KEY}
+  
+  radarr:
+    image: lscr.io/linuxserver/radarr
+    container_name: radarr
+    logging: *default-logging
+    environment:
+      - PUID=${USER_ID}
+      - PGID=${GROUP_ID}
+      - TZ=${TIMEZONE}
+      - RADARR__AUTH__TYPE=forms
+      - RADARR__AUTH__APIKEY=${ARR_API_KEY}
+    volumes:
+      - ${DOCKER_ROOT}/radarr:/config
+      - ${DATA_ROOT}:/data
+    restart: always
+    healthcheck:
+      test: [ "CMD", "curl", "--fail", "http://127.0.0.1:7878/radarr/ping" ]
+      interval: 10s
+      retries: 10
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.radarr.rule=Host(`radarr.${DOMAIN}`)
+      - traefik.http.services.radarr.loadbalancer.server.port=7878
+      - homepage.group=Media
+      - homepage.name=Radarr
+      - homepage.icon=radarr.png
+      - homepage.href=https://radarr.${DOMAIN}${OPT_EXT_PORT}
+      - homepage.description=Movies management
+      - homepage.weight=1
+      - homepage.widget.type=radarr
+      - homepage.widget.url=https://radarr.${DOMAIN}${OPT_EXT_PORT}
+      - homepage.widget.key=${ARR_API_KEY}
+  
+  lidarr:
+    image: lscr.io/linuxserver/lidarr
+    container_name: lidarr
+    logging: *default-logging
+    environment:
+      - PUID=${USER_ID}
+      - PGID=${GROUP_ID}
+      - TZ=${TIMEZONE}
+      - LIDARR__AUTH__APIKEY=${ARR_API_KEY}
+    volumes:
+      - ${DOCKER_ROOT}/lidarr:/config
+      - ${DATA_ROOT}:/data
+    restart: always
+    healthcheck:
+      test: [ "CMD", "curl", "--fail", "http://127.0.0.1:8686/lidarr/ping" ]
+      interval: 10s
+      retries: 10
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.lidarr.rule=Host(`lidarr.${DOMAIN}`)
+      - traefik.http.services.lidarr.loadbalancer.server.port=8686
+      - homepage.group=Media
+      - homepage.name=Lidarr
+      - homepage.icon=lidarr.png
+      - homepage.href=https://lidarr.${DOMAIN}${OPT_EXT_PORT}
+      - homepage.description=Music management
+      - homepage.weight=2
+      - homepage.widget.type=lidarr
+      - homepage.widget.url=https://lidarr.${DOMAIN}${OPT_EXT_PORT}
+      - homepage.widget.key=${ARR_API_KEY}
+
+  readarr:
+    image: lscr.io/linuxserver/readarr:develop
+    container_name: readarr
+    logging: *default-logging
+    environment:
+      - PUID=${USER_ID}
+      - PGID=${GROUP_ID}
+      - TZ=${TIMEZONE}
+      - READARR__AUTH__APIKEY=${ARR_API_KEY}
+    volumes:
+      - ${DOCKER_ROOT}/readarr:/config
+      - ${DATA_ROOT}:/data
+    restart: always
+    healthcheck:
+      test: [ "CMD", "curl", "--fail", "http://127.0.0.1:8787/readarr/ping" ]
+      interval: 10s
+      retries: 10
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.readarr.rule=Host(`readarr.${DOMAIN}`)
+      - traefik.http.services.readarr.loadbalancer.server.port=8787
+      - homepage.group=Media
+      - homepage.name=Readarr
+      - homepage.icon=readarr.png
+      - homepage.href=https://readarr.${DOMAIN}${OPT_EXT_PORT}
+      - homepage.description=Book management
+      - homepage.weight=2
+      - homepage.widget.type=readarr
+      - homepage.widget.url=https://readarr.${DOMAIN}${OPT_EXT_PORT}
+      - homepage.widget.key=${ARR_API_KEY}
+
+  mylar:
+    image: lscr.io/linuxserver/mylar3
+    container_name: mylar
+    logging: *default-logging
+    environment:
+      - PUID=${USER_ID}
+      - PGID=${GROUP_ID}
+      - TZ=${TIMEZONE}
+    volumes:
+      - ${DOCKER_ROOT}/mylar:/config
+      - ${DATA_ROOT}/comics:/comics
+      - ${DATA_ROOT}/download/sab/complete/comics:/downloads 
+    restart: unless-stopped
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.mylar.rule=Host(`mylar.${DOMAIN}`)
+      - traefik.http.services.mylar.loadbalancer.server.port=8090
+      - homepage.group=Media
+      - homepage.name=Mylar
+      - homepage.icon=mylar.png
+      - homepage.href=https://mylar.${DOMAIN}${OPT_EXT_PORT}
+      - homepage.description=Comic management
+      - homepage.weight=2
+      - homepage.widget.type=mylar
+      - homepage.widget.url=https://mylar.${DOMAIN}${OPT_EXT_PORT}
+      - homepage.widget.key=${MYLAR_API_KEY}
+  
+  plex:
+    image: linuxserver/plex
+    container_name: plex
+    logging: *default-logging
+    ports:
+      - 32400:32400
+      - 1900:1900/udp # dlna server
+      - 5353:5353/udp
+      - 8324:8324/tcp # roku plex companion
+      - 32410:32410/udp
+      - 32412:32412/udp
+      - 32413:32413/udp
+      - 32414:32414/udp
+      - 32469:32469 # dlna server
+    environment:
+      - PUID=${USER_ID}
+      - PGID=${GROUP_ID}
+      - TZ=${TIMEZONE}
+      - VERSION=latest
+      - ADVERTISE_IP=http://${INT_IP_ADDRESS}:32400/
+    volumes:
+      - ${DOCKER_ROOT}/plex:/config
+      - ${DOCKER_ROOT}/transcode:/transcode
+      - ${DATA_ROOT}:/data
+    #devices:
+      #- /dev/dri:/dev/dri
+    restart: unless-stopped
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.plex.rule=Host(`plex.${DOMAIN}`)
+      - traefik.http.services.plex.loadbalancer.server.port=32400
+      - homepage.group=Watch
+      - homepage.name=Plex
+      - homepage.icon=plex.png
+      - homepage.href=https://plex.${DOMAIN}${OPT_EXT_PORT}
+      - homepage.description=Video Streaming
+      - homepage.weight=2
+      - homepage.widget.type=plex
+      - homepage.widget.url=https://plex.${DOMAIN}${OPT_EXT_PORT}
+      - homepage.widget.key=${PLEX_TOKEN}
+
+  # not ready to use this yet. too cluttered until i settle on a config
+  #kometa:
+    #image: lscr.io/linuxserver/kometa:latest
+    #container_name: kometa
+    #logging: *default-logging
+    #environment:
+      #- PUID=${USER_ID}
+      #- PGID=${GROUP_ID}
+      #- TZ=${TIMEZONE}
+      #- KOMETA_CONFIG=/config/config.yml #optional
+      #- KOMETA_TIME=03:00 #optional
+      #- KOMETA_RUN=False #optional
+      #- KOMETA_TEST=False #optional
+      #- KOMETA_NO_MISSING=False #optional
+    #volumes:
+      #- ${DOCKER_ROOT}/kometa:/config
+    #restart: unless-stopped
+        
+  overseerr:
+    image: lscr.io/linuxserver/overseerr:latest
+    container_name: overseerr
+    logging: *default-logging
+    environment:
+      - PUID=${USER_ID}
+      - PGID=${GROUP_ID}
+      - TZ=${TIMEZONE}
+    volumes:
+      - ${DOCKER_ROOT}/overseerr:/config
+    restart: unless-stopped
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.overseerr.rule=Host(`overseerr.${DOMAIN}`)
+      - traefik.http.services.overseerr.loadbalancer.server.port=5055
+      - homepage.group=Media
+      - homepage.name=Overseerr
+      - homepage.icon=overseerr.png
+      - homepage.href=https://overseerr.${DOMAIN}${OPT_EXT_PORT}
+      - homepage.description=Plex Requests
+      - homepage.weight=2
+      - homepage.widget.type=overseerr
+      - homepage.widget.url=https://overseerr.${DOMAIN}${OPT_EXT_PORT}
+      - homepage.widget.key=${OVERSEERR_API_KEY}
+
+  flood:
+    image: jesec/flood
+    container_name: flood
+    user: 1000:1000
+    restart: unless-stopped
+    command: --port 3001 --allowedpath /data
+    environment:
+      - HOME=/config
+      - TZ=${TIMEZONE}
+    volumes:
+      - ${DOCKER_ROOT}/rtorrent:/config
+      - ${DATA_ROOT}:/data
+    ports:
+      - 3001:3001
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.flood.rule=Host(`flood.${DOMAIN}`)
+      - traefik.http.services.flood.loadbalancer.server.port=3001
+      - homepage.group=Download
+      - homepage.name=Flood
+      - homepage.icon=flood.png
+      - homepage.href=https://flood.${DOMAIN}${OPT_EXT_PORT}
+      - homepage.description=rTorrent Frontend
+      - homepage.weight=2
+      - homepage.widget.type=flood
+      - homepage.widget.url=https://flood.${DOMAIN}${OPT_EXT_PORT}
+      - homepage.widget.username=${USER}
+      - homepage.widget.password=${BASIC_AUTH_CLEAR}
+
+  rtorrent:
+    image: jesec/rtorrent
+    container_name: rtorrent
+    user: 1000:1000
+    restart: unless-stopped
+    command: -o network.port_range.set=6881-6881,system.daemon.set=true
+    environment:
+      - HOME=/config
+      - TZ=${TIMEZONE}
+    volumes:
+      - ${DOCKER_ROOT}/rtorrent:/config
+      - ${DATA_ROOT}:/data
+    ports:
+      - 5000:5000
+      - 6881:6881
+
+volumes:
+  letsencrypt:
+    name: letsencrypt
