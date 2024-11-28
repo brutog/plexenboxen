@@ -21,7 +21,7 @@ sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
 
 # this adds "compose" as a verb to "docker"
 sudo apt update
-sudo apt install docker-compose-plugin -y
+sudo apt install docker-compose docker-compose-plugin -y
 
 # add user to docker group
 sudo usermod -aG docker $USER
