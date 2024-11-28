@@ -274,8 +274,8 @@ services:
       - ${DOCKER_ROOT}/plex:/config
       - ${DOCKER_ROOT}/transcode:/transcode
       - ${DATA_ROOT}:/data
-    #devices:
-      #- /dev/dri:/dev/dri
+    devices:
+      - /dev/dri:/dev/dri
     restart: unless-stopped
     labels:
       - traefik.enable=true
