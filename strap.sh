@@ -3,11 +3,10 @@
 
 # some packages
 sudo apt install -y \
-	cif-utils \
 	nfs-common \
-	apache2-utils \ # for htpasswd
+	apache2-utils \
 	samba \
-	git # just in case
+	git
 
 # get the newest docker-compose
 sudo install -m 0755 -d /etc/apt/keyrings
